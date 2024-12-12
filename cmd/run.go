@@ -152,7 +152,7 @@ func ensureServiceBusAutoForwardTopicExists(ctx context.Context, namespace, prim
 			fmt.Sprintf("autofwd-sub-%s", leafName),
 			&admin.CreateSubscriptionOptions{
 				Properties: &admin.SubscriptionProperties{
-					ForwardTo: to.Ptr(leafName),
+					ForwardTo: to.Ptr(fmt.Sprintf("sb://%s/%s", namespace, leafName)),
 				},
 			})
 		if err != nil {
