@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -18,6 +19,8 @@ import (
 
 const magicShardNum = 20
 
+var processorName string
+
 // runCmd represents the run command
 var runCmd = &cobra.Command{
 	Use:   "run",
@@ -26,7 +29,7 @@ var runCmd = &cobra.Command{
 		logrus.Infof("starting...")
 		connectionString, _ := cmd.Flags().GetString("connection-string")
 		primaryTopicName, _ := cmd.Flags().GetString("primary-topic-name")
-		processorName, _ := cmd.Flags().GetString("name")
+		processorName, _ = cmd.Flags().GetString("name")
 		run(connectionString, primaryTopicName, processorName)
 	},
 }
@@ -83,12 +86,18 @@ func listenToServiceBusAutoForwardTopic(ctx context.Context, namespace, leafTopi
 
 func handleMessage(ctx context.Context, settler shuttle.MessageSettler, msg *azservicebus.ReceivedMessage) {
 	// check if the message is for this processor
-	msgBody := string(msg.Body)
-	processorName, _ := rootCmd.Flags().GetString("name")
+	logrus.Debugf("message received: %s", string(msg.Body))
+	var recievedMsg Message
+	if err := json.Unmarshal(msg.Body, &recievedMsg); err != nil {
+		logrus.Errorf("failed to unmarshal message: %v", err)
+		return
+	}
 
-	if msgBody != processorName {
+	logrus.Infof("message received: %s", recievedMsg)
+
+	if recievedMsg.To != processorName {
 		// this message is not for this processor, settle it
-		logrus.Infof("message is not for this processor %s, settling it: %s", processorName, msgBody)
+		logrus.Infof("message is not for this processor %s, settling it: %s", processorName, recievedMsg.To)
 	} else {
 		//otherwise, wait 5 seconds and say hello
 		time.Sleep(5 * time.Second)
