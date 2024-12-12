@@ -27,6 +27,10 @@ var runCmd = &cobra.Command{
 	Short: "A brief description of your command",
 	Run: func(cmd *cobra.Command, args []string) {
 		logrus.Infof("starting...")
+		debug, _ := cmd.Flags().GetBool("debug")
+		if debug {
+			logrus.SetLevel(logrus.DebugLevel)
+		}
 		connectionString, _ := cmd.Flags().GetString("connection-string")
 		primaryTopicName, _ := cmd.Flags().GetString("primary-topic-name")
 		processorName, _ = cmd.Flags().GetString("name")
@@ -116,6 +120,7 @@ func ensureServiceBusAutoForwardTopicExists(ctx context.Context, namespace, prim
 	if err != nil {
 		return fmt.Errorf("failed to create credential: %w", err)
 	}
+	logrus.Debugf("creds: %s", credential)
 	client, err := admin.NewClient(namespace, credential, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create admin service bus client: %w", err)
