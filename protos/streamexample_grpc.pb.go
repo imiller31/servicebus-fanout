@@ -19,14 +19,20 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	StreamService_GetRequests_FullMethodName = "/protos.StreamService/GetRequests"
+	StreamService_GetMessages_FullMethodName = "/protos.StreamService/GetMessages"
 )
 
 // StreamServiceClient is the client API for StreamService service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// The stream manager accepts requests from many clients to create bi-directional streams
+// between the client and the stream manager. The stream manager will then forward messages
+// to the appropriate stream based on the TargetLeaf and TargetProcessor fields of the message.
 type StreamServiceClient interface {
-	GetRequests(ctx context.Context, in *Request, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Response], error)
+	// Naming is hard, this method allows a client to register a stream and get messages forwarded to it, it should respond
+	// with the messageId and if an error occurred when the forwarded message is processed.
+	GetMessages(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientRequest, ServiceBusMessage], error)
 }
 
 type streamServiceClient struct {
@@ -37,30 +43,30 @@ func NewStreamServiceClient(cc grpc.ClientConnInterface) StreamServiceClient {
 	return &streamServiceClient{cc}
 }
 
-func (c *streamServiceClient) GetRequests(ctx context.Context, in *Request, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Response], error) {
+func (c *streamServiceClient) GetMessages(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientRequest, ServiceBusMessage], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &StreamService_ServiceDesc.Streams[0], StreamService_GetRequests_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &StreamService_ServiceDesc.Streams[0], StreamService_GetMessages_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[Request, Response]{ClientStream: stream}
-	if err := x.ClientStream.SendMsg(in); err != nil {
-		return nil, err
-	}
-	if err := x.ClientStream.CloseSend(); err != nil {
-		return nil, err
-	}
+	x := &grpc.GenericClientStream[ClientRequest, ServiceBusMessage]{ClientStream: stream}
 	return x, nil
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type StreamService_GetRequestsClient = grpc.ServerStreamingClient[Response]
+type StreamService_GetMessagesClient = grpc.BidiStreamingClient[ClientRequest, ServiceBusMessage]
 
 // StreamServiceServer is the server API for StreamService service.
 // All implementations must embed UnimplementedStreamServiceServer
 // for forward compatibility.
+//
+// The stream manager accepts requests from many clients to create bi-directional streams
+// between the client and the stream manager. The stream manager will then forward messages
+// to the appropriate stream based on the TargetLeaf and TargetProcessor fields of the message.
 type StreamServiceServer interface {
-	GetRequests(*Request, grpc.ServerStreamingServer[Response]) error
+	// Naming is hard, this method allows a client to register a stream and get messages forwarded to it, it should respond
+	// with the messageId and if an error occurred when the forwarded message is processed.
+	GetMessages(grpc.BidiStreamingServer[ClientRequest, ServiceBusMessage]) error
 	mustEmbedUnimplementedStreamServiceServer()
 }
 
@@ -71,8 +77,8 @@ type StreamServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedStreamServiceServer struct{}
 
-func (UnimplementedStreamServiceServer) GetRequests(*Request, grpc.ServerStreamingServer[Response]) error {
-	return status.Errorf(codes.Unimplemented, "method GetRequests not implemented")
+func (UnimplementedStreamServiceServer) GetMessages(grpc.BidiStreamingServer[ClientRequest, ServiceBusMessage]) error {
+	return status.Errorf(codes.Unimplemented, "method GetMessages not implemented")
 }
 func (UnimplementedStreamServiceServer) mustEmbedUnimplementedStreamServiceServer() {}
 func (UnimplementedStreamServiceServer) testEmbeddedByValue()                       {}
@@ -95,16 +101,12 @@ func RegisterStreamServiceServer(s grpc.ServiceRegistrar, srv StreamServiceServe
 	s.RegisterService(&StreamService_ServiceDesc, srv)
 }
 
-func _StreamService_GetRequests_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(Request)
-	if err := stream.RecvMsg(m); err != nil {
-		return err
-	}
-	return srv.(StreamServiceServer).GetRequests(m, &grpc.GenericServerStream[Request, Response]{ServerStream: stream})
+func _StreamService_GetMessages_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(StreamServiceServer).GetMessages(&grpc.GenericServerStream[ClientRequest, ServiceBusMessage]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type StreamService_GetRequestsServer = grpc.ServerStreamingServer[Response]
+type StreamService_GetMessagesServer = grpc.BidiStreamingServer[ClientRequest, ServiceBusMessage]
 
 // StreamService_ServiceDesc is the grpc.ServiceDesc for StreamService service.
 // It's only intended for direct use with grpc.RegisterService,
@@ -115,9 +117,10 @@ var StreamService_ServiceDesc = grpc.ServiceDesc{
 	Methods:     []grpc.MethodDesc{},
 	Streams: []grpc.StreamDesc{
 		{
-			StreamName:    "GetRequests",
-			Handler:       _StreamService_GetRequests_Handler,
+			StreamName:    "GetMessages",
+			Handler:       _StreamService_GetMessages_Handler,
 			ServerStreams: true,
+			ClientStreams: true,
 		},
 	},
 	Metadata: "streamexample.proto",

@@ -12,6 +12,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus/admin"
 	"github.com/Azure/go-shuttle/v2"
+	"github.com/imiller31/servicebus-fanout/pkg/streams"
 	"github.com/imiller31/servicebus-fanout/protos"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -58,16 +59,16 @@ func runCx(connectionString, primaryTopicName, processorName string) {
 	}
 
 	// create a new stream server to handle client registrations
-	streamServer := NewStreamServer(ctx)
+	streamServer := streams.NewStreamServer(ctx)
 	go runStreamServer(ctx, streamServer)
 
 	// listen to the leaf topic
-	if err := listenToServiceBusAutoForwardTopic(ctx, connectionString, leafTopicName, processorName, streamServer.handleMessage); err != nil {
+	if err := listenToServiceBusAutoForwardTopic(ctx, connectionString, leafTopicName, processorName, streamServer.HandleMessage); err != nil {
 		logrus.Fatalf("failed to listen to service bus auto forward topic: %v", err)
 	}
 }
 
-func runStreamServer(ctx context.Context, streamServer *StreamServer) {
+func runStreamServer(ctx context.Context, streamServer *streams.StreamServer) {
 	// dial server
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", 50051))
 	if err != nil {

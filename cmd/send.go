@@ -7,6 +7,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/Azure/go-shuttle/v2"
+	"github.com/google/uuid"
 	"github.com/imiller31/servicebus-fanout/protos"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -61,6 +62,7 @@ func sendHello(connectionString, primaryTopicName, processorName, msgType string
 		TargetLeaf:      leafTopicName,
 		TargetProcessor: processorName,
 		Message:         "Hello from the sender",
+		MessageId:       uuid.Must(uuid.NewV6()).String(),
 		Type:            msgType,
 	}
 

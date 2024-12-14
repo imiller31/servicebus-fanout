@@ -4,8 +4,13 @@ package protos;
 
 option go_package = "github.com/imiller31/servicebus-fanout/protos";
 
+// The stream manager accepts requests from many clients to create bi-directional streams
+// between the client and the stream manager. The stream manager will then forward messages
+// to the appropriate stream based on the TargetLeaf and TargetProcessor fields of the message.
 service StreamService {
-  rpc GetRequests (Request) returns (stream Response) {}
+  // Naming is hard, this method allows a client to register a stream and get messages forwarded to it, it should respond
+  // with the messageId and if an error occurred when the forwarded message is processed.
+  rpc GetMessages (stream ClientRequest) returns (stream ServiceBusMessage) {}
 }
 
 message ServiceBusMessage {
@@ -13,13 +18,18 @@ message ServiceBusMessage {
   string TargetProcessor = 2;
   string Message = 3;
   string Type = 4;
+  string MessageId = 5;
 }
 
-message Request {
+message ClientRequest {
   string ClientName = 1;
-  string Type = 2;
+  string ClientType = 2;
+  bool IsRegistration = 3;
+  string MessageId = 4;
+  Error Error = 5;
 }
 
-message Response {
+message Error {
   string Message = 1;
+  bool IsRetryable = 2;
 }

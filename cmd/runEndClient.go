@@ -39,24 +39,36 @@ func runEndClient(grpcAddress, clientName, clientType string) {
 
 	logrus.Infof("registering client %s with type %s", clientName, clientType)
 
-	registrationRequest := &protos.Request{
-		ClientName: clientName,
-		Type:       clientType,
+	registrationRequest := &protos.ClientRequest{
+		ClientName:     clientName,
+		ClientType:     clientType,
+		IsRegistration: true,
 	}
 
-	requests, err := client.GetRequests(context.Background(), registrationRequest)
+	stream, err := client.GetMessages(context.Background())
 	if err != nil {
 		logrus.Fatalf("failed to get stream: %v", err)
 	}
 
+	// Send the registration request
+	if err := stream.Send(registrationRequest); err != nil {
+		logrus.Fatalf("failed to send registration request: %v", err)
+	}
+
+	//TODO: Could probably ensure that the server successfully registered us before continuing
+
 	logrus.Infof("registered client waiting for requests from notification manager")
 	for {
-		resp, err := requests.Recv()
+		resp, err := stream.Recv()
 		if err == io.EOF || status.Code(err) == 14 {
 			logrus.Infof("stream closed with error: %s, reconnecting", err)
-			requests, err = client.GetRequests(context.Background(), registrationRequest)
+			stream, err = client.GetMessages(context.Background())
 			if err != nil {
 				logrus.Fatalf("failed to get stream: %v", err)
+			}
+			// need to re-register
+			if err := stream.Send(registrationRequest); err != nil {
+				logrus.Fatalf("failed to send registration request: %v", err)
 			}
 			continue
 		}
@@ -64,7 +76,19 @@ func runEndClient(grpcAddress, clientName, clientType string) {
 			logrus.Fatalf("failed to receive response: %v", err)
 		}
 
-		logrus.Infof("received message: %s", resp.Message)
+		logrus.Infof("received message: %s, with messageId: %s, from leaf: %s, from processor: %s", resp.Message, resp.MessageId, resp.TargetLeaf, resp.TargetProcessor)
+
+		// Send back the response to complete the message lifecycle
+		response := &protos.ClientRequest{
+			ClientName: clientName,
+			ClientType: clientType,
+			MessageId:  resp.MessageId,
+		}
+		if err := stream.Send(response); err != nil {
+			// what should happen realistically if we can't send a response back, but the stream is open? Fataling here to keep it simple
+			logrus.Fatalf("failed to send response: %v", err)
+		}
+
 	}
 
 }
