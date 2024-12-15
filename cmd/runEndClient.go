@@ -3,6 +3,10 @@ package cmd
 import (
 	"context"
 	"io"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/imiller31/servicebus-fanout/protos"
 	"github.com/sirupsen/logrus"
@@ -44,52 +48,66 @@ func runEndClient(grpcAddress, clientName, clientType string) {
 		ClientType:     clientType,
 		IsRegistration: true,
 	}
+	// setup graceful shutdown channel
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	stream, err := client.GetMessages(context.Background())
-	if err != nil {
-		logrus.Fatalf("failed to get stream: %v", err)
-	}
+	ctx, cancel := context.WithCancel(context.Background())
 
-	// Send the registration request
-	if err := stream.Send(registrationRequest); err != nil {
-		logrus.Fatalf("failed to send registration request: %v", err)
-	}
-
-	//TODO: Could probably ensure that the server successfully registered us before continuing
-
-	logrus.Infof("registered client waiting for requests from notification manager")
-	for {
-		resp, err := stream.Recv()
-		if err == io.EOF || status.Code(err) == 14 {
-			logrus.Infof("stream closed with error: %s, reconnecting", err)
-			stream, err = client.GetMessages(context.Background())
-			if err != nil {
-				logrus.Fatalf("failed to get stream: %v", err)
-			}
-			// need to re-register
-			if err := stream.Send(registrationRequest); err != nil {
-				logrus.Fatalf("failed to send registration request: %v", err)
-			}
-			continue
-		}
+	go func() {
+		stream, err := client.GetMessages(ctx)
 		if err != nil {
-			logrus.Fatalf("failed to receive response: %v", err)
+			logrus.Fatalf("failed to get stream: %v", err)
 		}
 
-		logrus.Infof("received message: %s, with messageId: %s, from leaf: %s, from processor: %s", resp.Message, resp.MessageId, resp.TargetLeaf, resp.TargetProcessor)
-
-		// Send back the response to complete the message lifecycle
-		response := &protos.ClientRequest{
-			ClientName: clientName,
-			ClientType: clientType,
-			MessageId:  resp.MessageId,
-		}
-		if err := stream.Send(response); err != nil {
-			// what should happen realistically if we can't send a response back, but the stream is open? Fataling here to keep it simple
-			logrus.Fatalf("failed to send response: %v", err)
+		// Send the registration request
+		if err := stream.Send(registrationRequest); err != nil {
+			logrus.Fatalf("failed to send registration request: %v", err)
 		}
 
-	}
+		//TODO: Could probably ensure that the server successfully registered us before continuing
+
+		logrus.Infof("registered client waiting for requests from notification manager")
+		for {
+			resp, err := stream.Recv()
+			if err == io.EOF || status.Code(err) == 14 {
+				logrus.Infof("stream closed with error: %s, reconnecting", err)
+				stream, err = client.GetMessages(ctx)
+				if err != nil {
+					logrus.Fatalf("failed to get stream: %v", err)
+				}
+				// need to re-register
+				if err := stream.Send(registrationRequest); err != nil {
+					logrus.Fatalf("failed to send registration request: %v", err)
+				}
+				continue
+			}
+			if err != nil {
+				logrus.Fatalf("failed to receive response: %v", err)
+			}
+
+			logrus.Infof("received message: %s, with messageId: %s, from leaf: %s, from processor: %s", resp.Message, resp.MessageId, resp.TargetLeaf, resp.TargetProcessor)
+
+			// Send back the response to complete the message lifecycle
+			response := &protos.ClientRequest{
+				ClientName: clientName,
+				ClientType: clientType,
+				MessageId:  resp.MessageId,
+			}
+			if err := stream.Send(response); err != nil {
+				// what should happen realistically if we can't send a response back, but the stream is open? Fataling here to keep it simple
+				logrus.Fatalf("failed to send response: %v", err)
+			}
+
+		}
+	}()
+
+	sig := <-sigChan
+	logrus.Infof("received signal: %s, shutting down", sig)
+	cancel()
+
+	time.Sleep(5 * time.Second)
+	logrus.Infof("Shutting down")
 
 }
 

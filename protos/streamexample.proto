@@ -33,3 +33,10 @@ message Error {
   string Message = 1;
   bool IsRetryable = 2;
 }
+
+// This response is sent from NotificationManager to the response topic to inform the original sender of message completion
+message NotficationResponse {
+  string MessageId = 1;
+  string Type = 2;
+  Error Error = 3;
+}

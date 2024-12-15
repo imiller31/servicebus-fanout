@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
 	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
@@ -27,7 +28,7 @@ var leafTopicName string
 // notificationMgrCmd represents the run command
 var notificationMgrCmd = &cobra.Command{
 	Use:   "notification-manager",
-	Short: "A brief description of your command",
+	Short: "the notification manager listens to a subscription on a leaf topic and handles the message lifecycle while forwarding to the appropriate client",
 	Run: func(cmd *cobra.Command, args []string) {
 		logrus.Infof("starting...")
 		debug, _ := cmd.Flags().GetBool("debug")
@@ -37,11 +38,11 @@ var notificationMgrCmd = &cobra.Command{
 		connectionString, _ := cmd.Flags().GetString("connection-string")
 		primaryTopicName, _ := cmd.Flags().GetString("primary-topic-name")
 		processorName, _ = cmd.Flags().GetString("name")
-		runCx(connectionString, primaryTopicName, processorName)
+		runNotificationMgr(connectionString, primaryTopicName, processorName)
 	},
 }
 
-func runCx(connectionString, primaryTopicName, processorName string) {
+func runNotificationMgr(connectionString, primaryTopicName, processorName string) {
 	logrus.Infof("starting run with connection string %s, primary topic name %s, processor name %s", connectionString, primaryTopicName, processorName)
 
 	// create a new context
@@ -53,17 +54,28 @@ func runCx(connectionString, primaryTopicName, processorName string) {
 		logrus.Fatalf("failed to compute leaf topic name: %v", err)
 	}
 
+	// Create a new service bus client
+	credential, err := azidentity.NewDefaultAzureCredential(nil)
+	if err != nil {
+		logrus.Fatalf("failed to create credential: %w", err)
+	}
 	// ensure the leaf topic and autofwd subscription exist
-	if err := ensureServiceBusAutoForwardTopicExists(ctx, connectionString, primaryTopicName, leafTopicName, processorName); err != nil {
+	if err := ensureServiceBusAutoForwardTopicExists(ctx, credential, connectionString, primaryTopicName, leafTopicName, processorName); err != nil {
 		logrus.Fatalf("failed to ensure service bus auto forward topic exists: %v", err)
 	}
 
+	// Create a new service bus client
+	client, err := azservicebus.NewClient(connectionString, credential, nil)
+	if err != nil {
+		logrus.Fatalf("failed to create service bus client: %v", err)
+	}
+
 	// create a new stream server to handle client registrations
-	streamServer := streams.NewStreamServer(ctx)
+	streamServer := streams.NewStreamServer(ctx, client)
 	go runStreamServer(ctx, streamServer)
 
 	// listen to the leaf topic
-	if err := listenToServiceBusAutoForwardTopic(ctx, connectionString, leafTopicName, processorName, streamServer.HandleMessage); err != nil {
+	if err := listenToServiceBusAutoForwardTopic(ctx, client, leafTopicName, processorName, streamServer.HandleMessage); err != nil {
 		logrus.Fatalf("failed to listen to service bus auto forward topic: %v", err)
 	}
 }
@@ -83,18 +95,7 @@ func runStreamServer(ctx context.Context, streamServer *streams.StreamServer) {
 	logrus.Infof("grpc server stopped")
 }
 
-func listenToServiceBusAutoForwardTopic(ctx context.Context, namespace, leafTopic, processorName string, handlerFunc shuttle.HandlerFunc) error {
-	// Create a new service bus client
-	credential, err := azidentity.NewDefaultAzureCredential(nil)
-	if err != nil {
-		return fmt.Errorf("failed to create credential: %w", err)
-	}
-
-	client, err := azservicebus.NewClient(namespace, credential, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create service bus client: %w", err)
-	}
-
+func listenToServiceBusAutoForwardTopic(ctx context.Context, client *azservicebus.Client, leafTopic, processorName string, handlerFunc shuttle.HandlerFunc) error {
 	// Create a new receiver on the processor's subscription
 	receiver, err := client.NewReceiverForSubscription(leafTopic, processorName, nil)
 	if err != nil {
@@ -114,15 +115,8 @@ func listenToServiceBusAutoForwardTopic(ctx context.Context, namespace, leafTopi
 	return nil
 }
 
-func ensureServiceBusAutoForwardTopicExists(ctx context.Context, namespace, rootTopicName, leafName, processorName string) error {
-	logrus.Infof("ensuring service bus auto forward topic exists")
-
-	credential, err := azidentity.NewDefaultAzureCredential(nil)
-	if err != nil {
-		return fmt.Errorf("failed to create credential: %w", err)
-	}
-	logrus.Debugf("creds: %s", credential)
-	client, err := admin.NewClient(namespace, credential, nil)
+func ensureServiceBusAutoForwardTopicExists(ctx context.Context, creds azcore.TokenCredential, connectionString, rootTopicName, leafName, processorName string) error {
+	client, err := admin.NewClient(connectionString, creds, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create admin service bus client: %w", err)
 	}
@@ -137,7 +131,7 @@ func ensureServiceBusAutoForwardTopicExists(ctx context.Context, namespace, root
 
 	autoFwdOpts := &admin.CreateSubscriptionOptions{
 		Properties: &admin.SubscriptionProperties{
-			ForwardTo: to.Ptr(fmt.Sprintf("sb://%s/%s", namespace, leafName)),
+			ForwardTo: to.Ptr(fmt.Sprintf("sb://%s/%s", connectionString, leafName)),
 		},
 	}
 	if err := ensureSubscription(ctx, client, rootTopicName, fmt.Sprintf("autofwd-sub-%s", leafName), autoFwdOpts); err != nil {

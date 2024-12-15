@@ -6,6 +6,7 @@ import (
 	"github.com/imiller31/servicebus-fanout/protos"
 )
 
+// ResponseManager is a basic concurrency safe map for storing response channels back to the message handler
 type ResponseManager struct {
 	mu    sync.RWMutex
 	store map[string]chan *protos.ClientRequest

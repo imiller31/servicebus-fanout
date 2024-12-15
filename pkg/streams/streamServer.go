@@ -17,18 +17,18 @@ var _ protos.StreamServiceServer = StreamServer{}
 type StreamServer struct {
 	protos.UnimplementedStreamServiceServer
 
-	serverCtx context.Context
-
+	serverCtx         context.Context
 	RegisteredStreams *StreamManager
-
-	Responses *ResponseManager
+	Responses         *ResponseManager
+	sbClient          *azservicebus.Client
 }
 
-func NewStreamServer(ctx context.Context) *StreamServer {
+func NewStreamServer(ctx context.Context, sbClient *azservicebus.Client) *StreamServer {
 	return &StreamServer{
 		serverCtx:         ctx,
 		RegisteredStreams: NewStreamManager(),
 		Responses:         NewResponseManager(),
+		sbClient:          sbClient,
 	}
 }
 
@@ -48,6 +48,9 @@ func (s StreamServer) GetMessages(stream grpc.BidiStreamingServer[protos.ClientR
 		return err
 	}
 
+	clName := clientName(req.ClientName)
+	clType := streamType(req.ClientType)
+
 	if !req.IsRegistration {
 		logrus.Errorf("received message that is not a registration request")
 		return errors.New("received message that is not a registration request")
@@ -58,9 +61,9 @@ func (s StreamServer) GetMessages(stream grpc.BidiStreamingServer[protos.ClientR
 	for {
 		req, err := stream.Recv()
 		if err != nil {
-			logrus.Errorf("stream for client %s closed with error: %s", req.ClientName, err)
-			s.RegisteredStreams.DeleteStream(streamType(req.ClientType), clientName(req.ClientName))
-			logrus.Infof("deleted stream for client %s", req.ClientName)
+			logrus.Errorf("stream for client %s closed with error: %s", clName, err)
+			s.RegisteredStreams.DeleteStream(clType, clName)
+			logrus.Infof("deleted stream for client %s", clName)
 			return err
 		}
 
@@ -93,7 +96,10 @@ func (s StreamServer) HandleMessage(ctx context.Context, settler shuttle.Message
 	}
 	// we need to register a response channel for this message id
 	responseChannel := make(chan *protos.ClientRequest)
+
+	// defer cleaning up the response channel and message entry
 	defer close(responseChannel)
+	defer s.Responses.Delete(receivedMsg.MessageId)
 
 	s.Responses.Set(receivedMsg.MessageId, responseChannel)
 	logrus.Tracef("registered response channel for message id %s", receivedMsg.MessageId)
@@ -109,9 +115,6 @@ func (s StreamServer) HandleMessage(ctx context.Context, settler shuttle.Message
 	resp := <-responseChannel
 	logrus.Infof("received response from client: %s", resp)
 
-	// remove the response channel from the manager
-	s.Responses.Delete(receivedMsg.MessageId)
-
 	if resp.Error != nil && resp.Error.IsRetryable {
 		logrus.Errorf("client returned a retryable error: %s", resp.Error)
 		if err := settler.AbandonMessage(ctx, msg, nil); err != nil {
@@ -120,7 +123,31 @@ func (s StreamServer) HandleMessage(ctx context.Context, settler shuttle.Message
 		return
 	}
 
-	//TODO: send response to the response topic
+	// Need to understand the overhead of creating a new sender for each response.
+	// Since the client is passed down, it is unclear if the sender is on the same tcp connection. Can check with metrics easily.
+	sender, err := s.sbClient.NewSender("response", nil)
+	if err != nil {
+		logrus.Errorf("failed to create sender: %v", err)
+
+		// Clearly need some proper handling here, but this is just a demo
+		if err := settler.AbandonMessage(ctx, msg, nil); err != nil {
+			logrus.Errorf("failed to abandon message: %v", err)
+		}
+	}
+	shuttleSender := shuttle.NewSender(sender, &shuttle.SenderOptions{Marshaller: &shuttle.DefaultProtoMarshaller{}})
+
+	notificationResponse := &protos.NotficationResponse{
+		MessageId: resp.MessageId,
+		Type:      resp.ClientType,
+		Error:     resp.Error,
+	}
+
+	if err := shuttleSender.SendMessage(ctx, notificationResponse); err != nil {
+		logrus.Errorf("failed to send response: %v", err)
+		if err := settler.AbandonMessage(ctx, msg, nil); err != nil {
+			logrus.Errorf("failed to abandon message: %v", err)
+		}
+	}
 
 	if err := settler.CompleteMessage(ctx, msg, nil); err != nil {
 		logrus.Errorf("failed to settle message: %v", err)
