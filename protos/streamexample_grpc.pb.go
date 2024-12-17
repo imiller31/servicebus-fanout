@@ -32,7 +32,7 @@ const (
 type StreamServiceClient interface {
 	// Naming is hard, this method allows a client to register a stream and get messages forwarded to it, it should respond
 	// with the messageId and if an error occurred when the forwarded message is processed.
-	GetMessages(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientRequest, ServiceBusMessage], error)
+	GetMessages(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientRequest, NotificationForwarderWrapper], error)
 }
 
 type streamServiceClient struct {
@@ -43,18 +43,18 @@ func NewStreamServiceClient(cc grpc.ClientConnInterface) StreamServiceClient {
 	return &streamServiceClient{cc}
 }
 
-func (c *streamServiceClient) GetMessages(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientRequest, ServiceBusMessage], error) {
+func (c *streamServiceClient) GetMessages(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[ClientRequest, NotificationForwarderWrapper], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &StreamService_ServiceDesc.Streams[0], StreamService_GetMessages_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[ClientRequest, ServiceBusMessage]{ClientStream: stream}
+	x := &grpc.GenericClientStream[ClientRequest, NotificationForwarderWrapper]{ClientStream: stream}
 	return x, nil
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type StreamService_GetMessagesClient = grpc.BidiStreamingClient[ClientRequest, ServiceBusMessage]
+type StreamService_GetMessagesClient = grpc.BidiStreamingClient[ClientRequest, NotificationForwarderWrapper]
 
 // StreamServiceServer is the server API for StreamService service.
 // All implementations must embed UnimplementedStreamServiceServer
@@ -66,7 +66,7 @@ type StreamService_GetMessagesClient = grpc.BidiStreamingClient[ClientRequest, S
 type StreamServiceServer interface {
 	// Naming is hard, this method allows a client to register a stream and get messages forwarded to it, it should respond
 	// with the messageId and if an error occurred when the forwarded message is processed.
-	GetMessages(grpc.BidiStreamingServer[ClientRequest, ServiceBusMessage]) error
+	GetMessages(grpc.BidiStreamingServer[ClientRequest, NotificationForwarderWrapper]) error
 	mustEmbedUnimplementedStreamServiceServer()
 }
 
@@ -77,7 +77,7 @@ type StreamServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedStreamServiceServer struct{}
 
-func (UnimplementedStreamServiceServer) GetMessages(grpc.BidiStreamingServer[ClientRequest, ServiceBusMessage]) error {
+func (UnimplementedStreamServiceServer) GetMessages(grpc.BidiStreamingServer[ClientRequest, NotificationForwarderWrapper]) error {
 	return status.Errorf(codes.Unimplemented, "method GetMessages not implemented")
 }
 func (UnimplementedStreamServiceServer) mustEmbedUnimplementedStreamServiceServer() {}
@@ -102,11 +102,11 @@ func RegisterStreamServiceServer(s grpc.ServiceRegistrar, srv StreamServiceServe
 }
 
 func _StreamService_GetMessages_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(StreamServiceServer).GetMessages(&grpc.GenericServerStream[ClientRequest, ServiceBusMessage]{ServerStream: stream})
+	return srv.(StreamServiceServer).GetMessages(&grpc.GenericServerStream[ClientRequest, NotificationForwarderWrapper]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type StreamService_GetMessagesServer = grpc.BidiStreamingServer[ClientRequest, ServiceBusMessage]
+type StreamService_GetMessagesServer = grpc.BidiStreamingServer[ClientRequest, NotificationForwarderWrapper]
 
 // StreamService_ServiceDesc is the grpc.ServiceDesc for StreamService service.
 // It's only intended for direct use with grpc.RegisterService,

@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/Azure/go-shuttle/v2"
 	"github.com/imiller31/servicebus-fanout/protos"
 	"github.com/sirupsen/logrus"
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/proto"
 )
 
 var _ protos.StreamServiceServer = StreamServer{}
@@ -32,7 +32,7 @@ func NewStreamServer(ctx context.Context, sbClient *azservicebus.Client) *Stream
 	}
 }
 
-func (s StreamServer) GetRegisteredStream(streamType streamType) grpc.BidiStreamingServer[protos.ClientRequest, protos.ServiceBusMessage] {
+func (s StreamServer) GetRegisteredStream(streamType streamType) grpc.BidiStreamingServer[protos.ClientRequest, protos.NotificationForwarderWrapper] {
 	// downstream client could have multiple streams open, so we need to select one randomly to send the response to
 	if stream, ok := s.RegisteredStreams.GetRandomStream(streamType); ok {
 		return stream
@@ -40,7 +40,7 @@ func (s StreamServer) GetRegisteredStream(streamType streamType) grpc.BidiStream
 	return nil
 }
 
-func (s StreamServer) GetMessages(stream grpc.BidiStreamingServer[protos.ClientRequest, protos.ServiceBusMessage]) error {
+func (s StreamServer) GetMessages(stream grpc.BidiStreamingServer[protos.ClientRequest, protos.NotificationForwarderWrapper]) error {
 
 	req, err := stream.Recv()
 	if err != nil {
@@ -80,15 +80,20 @@ func (s StreamServer) GetMessages(stream grpc.BidiStreamingServer[protos.ClientR
 
 func (s StreamServer) HandleMessage(ctx context.Context, settler shuttle.MessageSettler, msg *azservicebus.ReceivedMessage) {
 	logrus.Debugf("received message: %s", msg)
-	var receivedMsg protos.ServiceBusMessage
-	if err := proto.Unmarshal(msg.Body, &receivedMsg); err != nil {
-		logrus.Errorf("failed to unmarshal message: %v", err)
-		return
+
+	var msgType string
+	var ok bool
+	if msgType, ok = msg.ApplicationProperties["type"].(string); !ok {
+		logrus.Errorf("message does not have a type property, completing")
+		if err := settler.CompleteMessage(ctx, msg, nil); err != nil {
+			logrus.Errorf("failed to settle message: %v", err)
+			return
+		}
 	}
 
-	stream := s.GetRegisteredStream(streamType(receivedMsg.Type))
+	stream := s.GetRegisteredStream(streamType(msgType))
 	if stream == nil {
-		logrus.Errorf("no stream registered for message type %s", receivedMsg.Type)
+		logrus.Errorf("no stream registered for message type %s", msgType)
 		if err := settler.CompleteMessage(ctx, msg, nil); err != nil {
 			logrus.Errorf("failed to settle message: %v", err)
 		}
@@ -99,24 +104,29 @@ func (s StreamServer) HandleMessage(ctx context.Context, settler shuttle.Message
 
 	// defer cleaning up the response channel and message entry
 	defer close(responseChannel)
-	defer s.Responses.Delete(receivedMsg.MessageId)
+	defer s.Responses.Delete(msg.MessageID)
 
-	s.Responses.Set(receivedMsg.MessageId, responseChannel)
-	logrus.Tracef("registered response channel for message id %s", receivedMsg.MessageId)
+	s.Responses.Set(msg.MessageID, responseChannel)
+	logrus.Tracef("registered response channel for message id %s", msg.MessageID)
+
+	forwardMsg := &protos.NotificationForwarderWrapper{
+		Data:      msg.Body,
+		MessageId: msg.MessageID,
+	}
 
 	// now we can send forward the message to the client for some processing
-	if err := stream.Send(&receivedMsg); err != nil {
+	if err := stream.Send(forwardMsg); err != nil {
 		logrus.Errorf("failed to send message to client: %v", err)
 	}
 
-	logrus.Infof("sent message %s to client for processing", receivedMsg.MessageId)
+	logrus.Infof("sent message %s to client for processing", msg.MessageID)
 
 	// wait for a response from the client
 	resp := <-responseChannel
 	logrus.Infof("received response from client: %s", resp)
 
 	if resp.Error != nil && resp.Error.IsRetryable {
-		logrus.Errorf("client returned a retryable error: %s", resp.Error)
+		logrus.Errorf("client asked for message %s to be retried", resp.MessageId)
 		if err := settler.AbandonMessage(ctx, msg, nil); err != nil {
 			logrus.Errorf("failed to abandon message: %v", err)
 		}
@@ -137,12 +147,11 @@ func (s StreamServer) HandleMessage(ctx context.Context, settler shuttle.Message
 	shuttleSender := shuttle.NewSender(sender, &shuttle.SenderOptions{Marshaller: &shuttle.DefaultProtoMarshaller{}})
 
 	notificationResponse := &protos.NotficationResponse{
-		MessageId: resp.MessageId,
-		Type:      resp.ClientType,
-		Error:     resp.Error,
+		Error:    resp.Error,
+		Response: resp.Response,
 	}
 
-	if err := shuttleSender.SendMessage(ctx, notificationResponse); err != nil {
+	if err := shuttleSender.SendMessage(ctx, notificationResponse, createResponseMsgMiddleware(resp.ClientType, resp.MessageId)); err != nil {
 		logrus.Errorf("failed to send response: %v", err)
 		if err := settler.AbandonMessage(ctx, msg, nil); err != nil {
 			logrus.Errorf("failed to abandon message: %v", err)
@@ -151,5 +160,15 @@ func (s StreamServer) HandleMessage(ctx context.Context, settler shuttle.Message
 
 	if err := settler.CompleteMessage(ctx, msg, nil); err != nil {
 		logrus.Errorf("failed to settle message: %v", err)
+	}
+}
+
+func createResponseMsgMiddleware(messageType, msgId string) func(*azservicebus.Message) error {
+	return func(msg *azservicebus.Message) error {
+		msg.MessageID = to.Ptr(msgId)
+		msg.ApplicationProperties = map[string]interface{}{
+			"type": messageType,
+		}
+		return nil
 	}
 }

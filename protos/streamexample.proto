@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package protos;
 
+import "google/protobuf/any.proto";
+
 option go_package = "github.com/imiller31/servicebus-fanout/protos";
 
 // The stream manager accepts requests from many clients to create bi-directional streams
@@ -10,7 +12,7 @@ option go_package = "github.com/imiller31/servicebus-fanout/protos";
 service StreamService {
   // Naming is hard, this method allows a client to register a stream and get messages forwarded to it, it should respond
   // with the messageId and if an error occurred when the forwarded message is processed.
-  rpc GetMessages (stream ClientRequest) returns (stream ServiceBusMessage) {}
+  rpc GetMessages (stream ClientRequest) returns (stream NotificationForwarderWrapper) {}
 }
 
 message ServiceBusMessage {
@@ -21,12 +23,20 @@ message ServiceBusMessage {
   string MessageId = 5;
 }
 
+// There is probably a way to leverage the Any type here, but the message is already serialized when we get it from SB
+// it would be a waster of time to unmarshal it just to marshal it again.
+message NotificationForwarderWrapper {
+  bytes Data = 1;
+  string MessageId = 2;
+}
+
 message ClientRequest {
   string ClientName = 1;
   string ClientType = 2;
   bool IsRegistration = 3;
   string MessageId = 4;
   Error Error = 5;
+  google.protobuf.Any Response = 6;
 }
 
 message Error {
@@ -36,7 +46,6 @@ message Error {
 
 // This response is sent from NotificationManager to the response topic to inform the original sender of message completion
 message NotficationResponse {
-  string MessageId = 1;
-  string Type = 2;
-  Error Error = 3;
+  Error Error = 1;
+  google.protobuf.Any Response = 2;
 }

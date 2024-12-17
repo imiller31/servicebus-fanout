@@ -14,6 +14,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 // runEndClientCmd represents the runEndClient command
@@ -86,13 +88,29 @@ func runEndClient(grpcAddress, clientName, clientType string) {
 				logrus.Fatalf("failed to receive response: %v", err)
 			}
 
-			logrus.Infof("received message: %s, with messageId: %s, from leaf: %s, from processor: %s", resp.Message, resp.MessageId, resp.TargetLeaf, resp.TargetProcessor)
+			var forwardedProtoMessage protos.ServiceBusMessage
+			if err = proto.Unmarshal(resp.Data, &forwardedProtoMessage); err != nil {
+				logrus.Fatalf("failed to unmarshal message: %v", err)
+			}
 
+			logrus.Infof("received message: %s, with messageId: %s, from leaf: %s, from processor: %s",
+				forwardedProtoMessage.Message,
+				forwardedProtoMessage.MessageId,
+				forwardedProtoMessage.TargetLeaf,
+				forwardedProtoMessage.TargetProcessor)
+
+			genericProto, err := anypb.New(&forwardedProtoMessage)
+			if err != nil {
+				logrus.Fatalf("failed to create anypb: %v", err)
+			}
 			// Send back the response to complete the message lifecycle
 			response := &protos.ClientRequest{
 				ClientName: clientName,
 				ClientType: clientType,
 				MessageId:  resp.MessageId,
+
+				// Proof that we can just send any proto message back
+				Response: genericProto,
 			}
 			if err := stream.Send(response); err != nil {
 				// what should happen realistically if we can't send a response back, but the stream is open? Fataling here to keep it simple

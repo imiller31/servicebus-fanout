@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/to"
 	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
 	"github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus/admin"
@@ -94,15 +95,16 @@ func sendHello(connectionString, primaryTopicName, processorName, msgType string
 		logrus.Fatalf("failed to compute leaf topic name: %v", err)
 	}
 
+	msgId := uuid.Must(uuid.NewV6()).String()
 	msg := &protos.ServiceBusMessage{
 		TargetLeaf:      leafTopicName,
 		TargetProcessor: processorName,
 		Message:         fmt.Sprintf("Hello from the sender at %s", time.Now()),
-		MessageId:       uuid.Must(uuid.NewV6()).String(),
+		MessageId:       msgId,
 		Type:            msgType,
 	}
 
-	err = shuttleSender.SendMessage(context.Background(), msg)
+	err = shuttleSender.SendMessage(context.Background(), msg, createMsgMiddleware(msgType, leafTopicName, processorName, msgId))
 	if err != nil {
 		logrus.Fatalf("failed to send message: %v", err)
 	}
@@ -110,6 +112,17 @@ func sendHello(connectionString, primaryTopicName, processorName, msgType string
 
 	wg.Wait()
 	logrus.Infof("successfully shut down")
+}
+
+func createMsgMiddleware(messageType, targetLeaf, targetProcessor, msgId string) func(*azservicebus.Message) error {
+	return func(msg *azservicebus.Message) error {
+		msg.MessageID = to.Ptr(msgId)
+		msg.To = to.Ptr(fmt.Sprintf("%s/%s", targetLeaf, targetProcessor))
+		msg.ApplicationProperties = map[string]interface{}{
+			"type": messageType,
+		}
+		return nil
+	}
 }
 
 func listenToResponseTopic(
@@ -127,23 +140,7 @@ func listenToResponseTopic(
 
 	shuttleReceiver := shuttle.NewProcessor(receiver, handler.handleResponses, nil)
 
-	go shuttleReceiver.Start(receiverCtx)
-
-	for {
-		select {
-		case response := <-handler.responseChan:
-			logrus.Infof("received response for msgId: %s, of type: %s, with error: %s", response.MessageId, response.Type, response.Error)
-			if !l {
-				break
-			}
-		}
-		if !l {
-			break
-		}
-	}
-
-	logrus.Infof("shutting down")
-	return nil
+	return shuttleReceiver.Start(receiverCtx)
 }
 
 type responseHandler struct {
@@ -151,13 +148,22 @@ type responseHandler struct {
 }
 
 func (r responseHandler) handleResponses(ctx context.Context, settler shuttle.MessageSettler, msg *azservicebus.ReceivedMessage) {
+	msgType := msg.ApplicationProperties["type"].(string)
+
 	var response protos.NotficationResponse
 	if err := proto.Unmarshal(msg.Body, &response); err != nil {
 		logrus.Errorf("failed to unmarshal response: %v", err)
 		return
 	}
 
-	r.responseChan <- &response
+	// proof we can unmarshal any proto message, there's some nuance here with anypb having the typeurl (how can we leverage this further)
+	var anyProto protos.ServiceBusMessage
+	if err := proto.Unmarshal(response.Response.Value, &anyProto); err != nil {
+		logrus.Errorf("failed to unmarshal any proto: %v", err)
+		return
+	}
+
+	logrus.Infof("recieved a response for msgId: %s, of type: %s, with error: %s, with message from response: %s", msg.MessageID, msgType, response.Error, anyProto.Message)
 
 	if err := settler.CompleteMessage(ctx, msg, nil); err != nil {
 		logrus.Errorf("failed to settle message: %v", err)
