@@ -33,9 +33,17 @@ message NotificationForwarderWrapper {
 message ClientRequest {
   string ClientName = 1;
   string ClientType = 2;
+
+  // There's probably a way to dynamically register a stream, but for now we expect the first request to be a registration and nothing more
   bool IsRegistration = 3;
+
+  // The client must let the notification manager know which message it is responding to
   string MessageId = 4;
+
+  // We need some indication if the notification manager should retry sending the message to the processor
   Error Error = 5;
+
+  // We support the ability to send an arbitrary response back to the client
   google.protobuf.Any Response = 6;
 }
 
@@ -45,6 +53,8 @@ message Error {
 }
 
 // This response is sent from NotificationManager to the response topic to inform the original sender of message completion
+// We likely don't need the Error here, as the response payload likely will contain information about the error
+// But we include it here since we have it from the end client.
 message NotficationResponse {
   Error Error = 1;
   google.protobuf.Any Response = 2;
